@@ -623,13 +623,13 @@ func (c *Client) GetCampaignCount(campaignId string, startDate time.Time, endDat
 
 type Lead struct {
 	Email           string            `json:"email"`
-	FirstName       string            `json:"first_name"`
-	LastName        string            `json:"last_name"`
-	CompanyName     string            `json:"company_name"`
-	Personalization string            `json:"personalization"`
-	Phone           string            `json:"phone"`
-	Website         string            `json:"website"`
-	CustomVariables map[string]string `json:"custom_variables"`
+	FirstName       string            `json:"first_name,omitempty"`
+	LastName        string            `json:"last_name,omitempty"`
+	CompanyName     string            `json:"company_name,omitempty"`
+	Personalization string            `json:"personalization,omitempty"`
+	Phone           string            `json:"phone,omitempty"`
+	Website         string            `json:"website,omitempty"`
+	CustomVariables map[string]string `json:"custom_variables,omitempty"`
 }
 
 type addLeadsToCampaignPayload struct {
