@@ -591,9 +591,6 @@ type getCampaignCountResponse struct {
 	LeadsRead         int    `json:"leads_read"`
 }
 
-/*
-"https://api.instantly.ai/api/v1/analytics/campaign/count?api_key=API_KEY&campaign_id=00000000-0000-0000-0000-000000000000&start_date=01-01-2023&end_date=01-31-2023"
-*/
 func (c *Client) GetCampaignCount(campaignId string, startDate time.Time, endDate *time.Time) (count *getCampaignCountResponse, err error) {
 	// Convert time.Time to string.
 	startDateStr := startDate.Format("01-02-2006")
@@ -668,25 +665,6 @@ func (c *Client) AddLeadsToCampaign(campaignId string, leads []Lead) (response *
 
 	return response, nil
 }
-
-/*
-[
-  {
-    "id": "00dd2f2a-e96b-41e3-b779-d88d91afcef5",
-    "timestamp_created": "2023-02-24T07:15:39.370Z",
-    "campaign": "00000000-0000-0000-0000-000000000000",
-    "status": 1,
-    "contact": "abc@xyz.com",
-    "email_opened": true,
-    "email_replied": false,
-    "lead_data": {
-      "email": "abc@xyz.com",
-      "companyName": "Instantly"
-    },
-    "campaign_name": "My first campaign"
-  }
-]
-*/
 
 type internalLead struct {
 	Id           string            `json:"id"`
