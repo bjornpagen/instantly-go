@@ -13,6 +13,14 @@ import (
 	"go.uber.org/ratelimit"
 )
 
+var (
+	ErrMarshalFailed          = errors.New("failed to unmarshal object")
+	ErrUnmarshalFailed        = errors.New("failed to unmarshal object")
+	ErrRequestCreationFailed  = errors.New("failed to create request")
+	ErrRequestExecutionFailed = errors.New("failed to execute request")
+	ErrRequestBodyReadFailed  = errors.New("failed to to read request body")
+)
+
 type Option func(option *options) error
 
 type options struct {
@@ -27,7 +35,7 @@ func WithHost(host string) Option {
 		// Check if host is valid.
 		_, err := http.NewRequest("GET", fmt.Sprintf("https://%s", host), nil)
 		if err != nil {
-			return errors.New("invalid host: " + err.Error())
+			return fmt.Errorf("invalid host: %w", err)
 		}
 
 		option.host = host
@@ -38,7 +46,7 @@ func WithHost(host string) Option {
 func WithApiVersion(version int) Option {
 	return func(option *options) error {
 		if version < 1 {
-			return errors.New("invalid api version: " + strconv.Itoa(version))
+			return fmt.Errorf("invalid api version")
 		}
 
 		option.apiVersion = version
@@ -70,7 +78,7 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		err := opt(o)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("bad option: %w", err)
 		}
 	}
 
@@ -106,12 +114,12 @@ func param(key, value string) query {
 	}
 }
 
-func (c *Client) buildBodyUrl(path string) string {
+func (c *Client) buildUrl(path string) string {
 	return fmt.Sprintf("https://%s/api/v%d/%s", c.options.host, c.options.apiVersion, path)
 }
 
 func (c *Client) buildQueryUrl(path string, params []query) string {
-	url := c.buildBodyUrl(path)
+	url := c.buildUrl(path)
 	url = fmt.Sprintf("%s?api_key=%s", url, c.apiKey)
 	for _, param := range params {
 		url = fmt.Sprintf("%s&%s=%s", url, param.key, param.value)
@@ -120,38 +128,24 @@ func (c *Client) buildQueryUrl(path string, params []query) string {
 	return url
 }
 
-func (c *Client) call(method, url string, body io.Reader) (data []byte, err error) {
-	req, err := http.NewRequest(method, url, body)
+func (c *Client) get(path string, params []query) (data []byte, err error) {
+	url := c.buildQueryUrl(path, params)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, errors.New("failed to create request: " + err.Error())
-	}
-
-	// If body is not nil, set content type to json.
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		return nil, ErrRequestCreationFailed
 	}
 
 	// Wait for rate limit.
 	(*c.options.rateLimit).Take()
 	res, err := c.options.httpClient.Do(req)
 	if err != nil {
-		return nil, errors.New("failed to execute request: " + err.Error())
+		return nil, ErrRequestExecutionFailed
 	}
 	defer res.Body.Close()
 
 	data, err = io.ReadAll(res.Body)
 	if err != nil {
-		return nil, errors.New("failed to read response body: " + err.Error())
-	}
-
-	return data, nil
-}
-
-func (c *Client) get(path string, params []query) (data []byte, err error) {
-	url := c.buildQueryUrl(path, params)
-	data, err = c.call("GET", url, nil)
-	if err != nil {
-		return nil, errors.New("failed to execute request: " + err.Error())
+		return nil, ErrRequestBodyReadFailed
 	}
 
 	return data, nil
@@ -160,26 +154,40 @@ func (c *Client) get(path string, params []query) (data []byte, err error) {
 func (c *Client) post(path string, body any) (data []byte, err error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, errors.New("failed to marshal body: " + err.Error())
+		return nil, ErrMarshalFailed
 	}
 
 	var bodyMap map[string]interface{}
 	err = json.Unmarshal(jsonBody, &bodyMap)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal body: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	bodyMap["api_key"] = c.apiKey
 
 	jsonBody, err = json.Marshal(bodyMap)
 	if err != nil {
-		return nil, errors.New("failed to marshal body: " + err.Error())
+		return nil, ErrMarshalFailed
 	}
 
-	url := c.buildBodyUrl(path)
-	data, err = c.call("POST", url, bytes.NewReader(jsonBody))
+	url := c.buildUrl(path)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, errors.New("failed to execute request: " + err.Error())
+		return nil, ErrRequestCreationFailed
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Wait for rate limit.
+	(*c.options.rateLimit).Take()
+	res, err := c.options.httpClient.Do(req)
+	if err != nil {
+		return nil, ErrRequestExecutionFailed
+	}
+	defer res.Body.Close()
+
+	data, err = io.ReadAll(res.Body)
+	if err != nil {
+		return nil, ErrRequestBodyReadFailed
 	}
 
 	return data, nil
@@ -188,7 +196,7 @@ func (c *Client) post(path string, body any) (data []byte, err error) {
 func (c *Client) Authenticate() (workspaceName string, err error) {
 	data, err := c.get("authenticate", nil)
 	if err != nil {
-		return "", errors.New("failed to authenticate: " + err.Error())
+		return "", fmt.Errorf("failed to authenticate: %w", err)
 	}
 
 	return string(data), nil
@@ -207,13 +215,13 @@ type listCampaignsResponse []struct {
 func (c *Client) ListCampaigns() ([]Campaign, error) {
 	data, err := c.get("campaign/list", nil)
 	if err != nil {
-		return nil, errors.New("failed to list campaigns: " + err.Error())
+		return nil, fmt.Errorf("failed to list campaigns: %w", err)
 	}
 
 	res := &listCampaignsResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal campaigns: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	var campaigns []Campaign
@@ -235,13 +243,13 @@ type getCampaignNameResponse struct {
 func (c *Client) GetCampaignName(campaignId string) (campaignName string, err error) {
 	data, err := c.get("campaign/get/name", []query{param("campaign_id", campaignId)})
 	if err != nil {
-		return "", errors.New("failed to get campaign name: " + err.Error())
+		return "", fmt.Errorf("failed to get campaign name: %w", err)
 	}
 
 	res := &getCampaignNameResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return "", errors.New("failed to unmarshal campaign name: " + err.Error())
+		return "", ErrUnmarshalFailed
 	}
 
 	return res.Name, nil
@@ -264,17 +272,17 @@ func (c *Client) SetCampaignName(campaignId, campaignName string) error {
 
 	data, err := c.post("campaign/set/name", payload)
 	if err != nil {
-		return errors.New("failed to set campaign name: " + err.Error())
+		return fmt.Errorf("failed to set campaign name: %w", err)
 	}
 
 	res := &setCampaignNameResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal campaign name: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to set campaign name: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -283,13 +291,13 @@ func (c *Client) SetCampaignName(campaignId, campaignName string) error {
 func (c *Client) GetCampaignAccounts(campaignId string) (accountEmails []string, err error) {
 	data, err := c.get("campaign/get/accounts", []query{param("campaign_id", campaignId)})
 	if err != nil {
-		return nil, errors.New("failed to get campaign accounts: " + err.Error())
+		return nil, fmt.Errorf("failed to get campaign accounts: %w", err)
 	}
 
 	var res []string
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal campaign accounts: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	return res, nil
@@ -312,17 +320,17 @@ func (c *Client) SetCampaignAccounts(campaignId string, accountEmails []string) 
 
 	data, err := c.post("campaign/set/accounts", payload)
 	if err != nil {
-		return errors.New("failed to set campaign accounts: " + err.Error())
+		return fmt.Errorf("failed to set campaign accounts: %w", err)
 	}
 
 	res := &setCampaignAccountsResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal campaign accounts: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to set campaign accounts: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -345,17 +353,17 @@ func (c *Client) AddSendingAccount(campaignId, email string) error {
 
 	data, err := c.post("campaign/add/account", payload)
 	if err != nil {
-		return errors.New("failed to add sending account: " + err.Error())
+		return fmt.Errorf("failed to add sending account: %w", err)
 	}
 
 	res := &addSendingAccountResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal sending account: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to add sending account: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -378,17 +386,17 @@ func (c *Client) RemoveSendingAccount(campaignId, email string) error {
 
 	data, err := c.post("campaign/remove/account", payload)
 	if err != nil {
-		return errors.New("failed to remove sending account: " + err.Error())
+		return fmt.Errorf("failed to remove sending account: %w", err)
 	}
 
 	res := &removeSendingAccountResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal sending account: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to remove sending account: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -479,22 +487,22 @@ func (c *Client) SetCampaignSchedule(campaignId string, startDate time.Time, end
 
 	payload, err := internalPayload.convert()
 	if err != nil {
-		return errors.New("failed to convert campaign schedule: " + err.Error())
+		return fmt.Errorf("failed to convert campaign schedule: %w", err)
 	}
 
 	data, err := c.post("campaign/set/schedules", payload)
 	if err != nil {
-		return errors.New("failed to set campaign schedule: " + err.Error())
+		return fmt.Errorf("failed to set campaign schedule: %w", err)
 	}
 
 	res := &setCampaignScheduleResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal campaign schedule: " + err.Error())
+		return ErrMarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to set campaign schedule: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -515,17 +523,17 @@ func (c *Client) LaunchCampaign(campaignId string) error {
 
 	data, err := c.post("campaign/launch", payload)
 	if err != nil {
-		return errors.New("failed to launch campaign: " + err.Error())
+		return fmt.Errorf("failed to launch campaign: %w", err)
 	}
 
 	res := &launchCampaignResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal campaign launch: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to launch campaign: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -546,17 +554,17 @@ func (c *Client) PauseCampaign(campaignId string) error {
 
 	data, err := c.post("campaign/pause", payload)
 	if err != nil {
-		return errors.New("failed to pause campaign: " + err.Error())
+		return fmt.Errorf("failed to pause campaign: %w", err)
 	}
 
 	res := &pauseCampaignResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
-		return errors.New("failed to unmarshal campaign pause: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to pause campaign: " + res.Status)
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -577,12 +585,12 @@ type getCampaignSummaryResponse struct {
 func (c *Client) GetCampaignSummary(campaignId string) (summary *getCampaignSummaryResponse, err error) {
 	data, err := c.get("campaign/summary", []query{param("campaign_id", campaignId)})
 	if err != nil {
-		return nil, errors.New("failed to get campaign summary: " + err.Error())
+		return nil, fmt.Errorf("failed to get campaign summary: %w", err)
 	}
 
 	err = json.Unmarshal(data, summary)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal campaign summary: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	return summary, nil
@@ -617,12 +625,12 @@ func (c *Client) GetCampaignCount(campaignId string, startDate time.Time, endDat
 	data, err := c.get("analytics/campaign/count", queries)
 
 	if err != nil {
-		return nil, errors.New("failed to get campaign count: " + err.Error())
+		return nil, fmt.Errorf("failed to get campaign count: %w", err)
 	}
 
 	err = json.Unmarshal(data, count)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal campaign count: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	return count, nil
@@ -662,12 +670,12 @@ func (c *Client) AddLeadsToCampaign(campaignId string, leads []Lead) (response *
 
 	data, err := c.post("lead/add", payload)
 	if err != nil {
-		return nil, errors.New("failed to add leads to campaign: " + err.Error())
+		return nil, fmt.Errorf("failed to add leads to campaign: %w", err)
 	}
 
 	err = json.Unmarshal(data, response)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal add leads to campaign: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	return response, nil
@@ -700,27 +708,27 @@ type getLeadFromCampaignResponse []struct {
 func (c *Client) GetLeadFromCampaign(campaignId, email string) (lead internalLead, err error) {
 	data, err := c.get("lead/get", []query{param("campaign_id", campaignId), param("email", email)})
 	if err != nil {
-		return lead, errors.New("failed to get lead from campaign: " + err.Error())
+		return lead, fmt.Errorf("failed to get lead from campaign: %w", err)
 	}
 
 	res := getLeadFromCampaignResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return lead, errors.New("failed to unmarshal get lead from campaign: " + err.Error())
+		return lead, ErrUnmarshalFailed
 	}
 
 	if len(res) == 0 {
-		return lead, errors.New("no lead found")
+		return lead, fmt.Errorf("no lead found")
 	}
 
 	if len(res) > 1 {
-		return lead, errors.New("multiple leads found")
+		return lead, fmt.Errorf("multiple leads found")
 	}
 
 	// Convert timestamp to time.Time.
 	timestamp, err := time.Parse(time.RFC3339, res[0].Timestamp)
 	if err != nil {
-		return lead, errors.New("failed to parse timestamp: " + err.Error())
+		return lead, fmt.Errorf("failed to parse timestamp: %w", err)
 	}
 
 	lead = internalLead{
@@ -756,17 +764,17 @@ func (c *Client) DeleteLeadsFromCampaign(campaignId string, deleteAllFromCompany
 
 	data, err := c.post("lead/delete", payload)
 	if err != nil {
-		return errors.New("failed to delete leads from campaign: " + err.Error())
+		return fmt.Errorf("failed to delete leads from campaign: %w", err)
 	}
 
-	response := deleteLeadsFromCampaignResponse{}
-	err = json.Unmarshal(data, &response)
+	res := deleteLeadsFromCampaignResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal delete leads from campaign: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
-	if response.Status != "success" {
-		return errors.New("failed to delete leads from campaign")
+	if res.Status != "success" {
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -804,17 +812,17 @@ func (c *Client) UpdateLeadStatus(campaignId, email, status string) error {
 
 	data, err := c.post("lead/update/status", payload)
 	if err != nil {
-		return errors.New("failed to update lead status: " + err.Error())
+		return fmt.Errorf("failed to update lead status: %w", err)
 	}
 
 	res := updateLeadStatusResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal update lead status: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to update lead status")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -839,17 +847,17 @@ func (c *Client) UpdateLeadVariable(campaignId, email string, variables map[stri
 
 	data, err := c.post("lead/data/update", payload)
 	if err != nil {
-		return errors.New("failed to update lead variable: " + err.Error())
+		return fmt.Errorf("failed to update lead variable: %w", err)
 	}
 
 	res := updateLeadVariableResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal update lead variable: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to update lead variable")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -874,17 +882,17 @@ func (c *Client) SetLeadVariable(campaignId, email string, variables map[string]
 
 	data, err := c.post("lead/data/set", payload)
 	if err != nil {
-		return errors.New("failed to set lead variable: " + err.Error())
+		return fmt.Errorf("failed to set lead variable: %w", err)
 	}
 
 	res := setLeadVariableResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal set lead variable: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to set lead variable")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -909,17 +917,17 @@ func (c *Client) DeleteLeadVariables(campaignId, email string, variables []strin
 
 	data, err := c.post("lead/data/update", payload)
 	if err != nil {
-		return errors.New("failed to delete lead variables: " + err.Error())
+		return fmt.Errorf("failed to delete lead variables: %w", err)
 	}
 
 	res := deleteLeadVariablesResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal delete lead variables: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to delete lead variables")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -943,17 +951,17 @@ func (c *Client) AddEntriesToBlocklist(entries []string) (entriesAdded int, err 
 
 	data, err := c.post("blocklist/add/entries", payload)
 	if err != nil {
-		return 0, errors.New("failed to add entries to blocklist: " + err.Error())
+		return 0, fmt.Errorf("failed to add entries to blocklist: %w", err)
 	}
 
 	res := addEntriesToBlocklistResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return 0, errors.New("failed to unmarshal add entries to blocklist: " + err.Error())
+		return 0, ErrMarshalFailed
 	}
 
 	if res.Status != "success" {
-		return 0, errors.New("failed to add entries to blocklist")
+		return 0, fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return res.EntriesAdded, nil
@@ -1010,29 +1018,29 @@ func (c *Client) ListAccounts(limit, skip int) ([]Account, error) {
 		param("skip", strconv.Itoa(skip)),
 	})
 	if err != nil {
-		return nil, errors.New("failed to list accounts: " + err.Error())
+		return nil, fmt.Errorf("failed to list accounts: %w", err)
 	}
 
 	res := listAccountsResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return nil, errors.New("failed to unmarshal list accounts: " + err.Error())
+		return nil, ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return nil, errors.New("failed to list accounts")
+		return nil, fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	accounts := make([]Account, len(res.Accounts))
 	for i, account := range res.Accounts {
 		timestampCreated, err := time.Parse(time.RFC3339, account.TimestampCreated)
 		if err != nil {
-			return nil, errors.New("failed to parse timestamp created: " + err.Error())
+			return nil, fmt.Errorf("failed to parse timestamp created: %w", err)
 		}
 
 		timestampUpdated, err := time.Parse(time.RFC3339, account.TimestampUpdated)
 		if err != nil {
-			return nil, errors.New("failed to parse timestamp updated: " + err.Error())
+			return nil, fmt.Errorf("failed to parse timestamp updated: %w", err)
 		}
 
 		accounts[i] = Account{
@@ -1071,17 +1079,17 @@ func (c *Client) CheckAccountVitals(accounts []string) (successList, failureList
 
 	data, err := c.post("account/test/vitals", payload)
 	if err != nil {
-		return nil, nil, errors.New("failed to check account vitals: " + err.Error())
+		return nil, nil, fmt.Errorf("failed to check account vitals: %w", err)
 	}
 
 	res := checkAccountVitalsResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return nil, nil, errors.New("failed to unmarshal check account vitals: " + err.Error())
+		return nil, nil, ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return nil, nil, errors.New("failed to check account vitals")
+		return nil, nil, fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	successList = make([]AccountVitals, len(res.SuccessList))
@@ -1124,17 +1132,17 @@ func (c *Client) EnableWarmup(email string) error {
 
 	data, err := c.post("account/warmup/enable", payload)
 	if err != nil {
-		return errors.New("failed to enable warmup: " + err.Error())
+		return fmt.Errorf("failed to enable warmup: %w", err)
 	}
 
 	res := enableWarmupResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal enable warmup: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to enable warmup")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -1155,17 +1163,17 @@ func (c *Client) PauseWarmup(email string) error {
 
 	data, err := c.post("account/warmup/pause", payload)
 	if err != nil {
-		return errors.New("failed to pause warmup: " + err.Error())
+		return fmt.Errorf("failed to pause warmup: %w", err)
 	}
 
 	res := pauseWarmupResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal pause warmup: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to pause warmup")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -1186,17 +1194,17 @@ func (c *Client) MarkAccountAsFixed(email string) error {
 
 	data, err := c.post("account/mark_fixed", payload)
 	if err != nil {
-		return errors.New("failed to mark accounts as fixed: " + err.Error())
+		return fmt.Errorf("failed to mark accounts as fixed: %w", err)
 	}
 
 	res := markAccountAsFixedResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to mark accounts as fixed")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -1207,17 +1215,17 @@ func (c *Client) MarkAllAccountsAsFixed() error {
 
 	data, err := c.post("account/mark_fixed", payload)
 	if err != nil {
-		return errors.New("failed to mark accounts as fixed: " + err.Error())
+		return fmt.Errorf("failed to mark accounts as fixed: %w", err)
 	}
 
 	res := markAccountAsFixedResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to mark accounts as fixed")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
@@ -1238,17 +1246,17 @@ func (c *Client) DeleteAccount(email string) error {
 
 	data, err := c.post("account/delete", payload)
 	if err != nil {
-		return errors.New("failed to delete account: " + err.Error())
+		return fmt.Errorf("failed to delete account: %w", err)
 	}
 
 	res := deleteAccountResponse{}
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return errors.New("failed to unmarshal delete account: " + err.Error())
+		return ErrUnmarshalFailed
 	}
 
 	if res.Status != "success" {
-		return errors.New("failed to delete account")
+		return fmt.Errorf("return status not successful: %s", res.Status)
 	}
 
 	return nil
