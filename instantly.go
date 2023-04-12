@@ -17,7 +17,7 @@ type Option func(option *options) error
 
 type options struct {
 	host       string
-	apiVersion *int
+	apiVersion int
 	rateLimit  *ratelimit.Limiter
 	httpClient *http.Client
 }
@@ -37,7 +37,11 @@ func WithHost(host string) Option {
 
 func WithApiVersion(version int) Option {
 	return func(option *options) error {
-		option.apiVersion = &version
+		if version < 1 {
+			return errors.New("invalid api version: " + strconv.Itoa(version))
+		}
+
+		option.apiVersion = version
 		return nil
 	}
 }
@@ -74,9 +78,8 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	if o.host == "" {
 		o.host = "api.instantly.ai"
 	}
-	if o.apiVersion == nil {
-		o.apiVersion = new(int)
-		*o.apiVersion = 1
+	if o.apiVersion == 0 {
+		o.apiVersion = 1
 	}
 	if o.rateLimit == nil {
 		// Our platform allows a maximum of 10 requests per second to prevent abuse.
@@ -89,28 +92,6 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	}
 
 	return &Client{apiKey: apiKey, options: o}, nil
-}
-
-func (c *Client) get(url string, body io.Reader) (data []byte, err error) {
-	req, err := http.NewRequest("GET", url, body)
-	if err != nil {
-		return nil, errors.New("failed to create request: " + err.Error())
-	}
-
-	// Wait for rate limit.
-	(*c.options.rateLimit).Take()
-	res, err := c.options.httpClient.Do(req)
-	if err != nil {
-		return nil, errors.New("failed to execute request: " + err.Error())
-	}
-	defer res.Body.Close()
-
-	data, err = io.ReadAll(res.Body)
-	if err != nil {
-		return nil, errors.New("failed to read response body: " + err.Error())
-	}
-
-	return data, nil
 }
 
 type query struct {
@@ -139,7 +120,44 @@ func (c *Client) buildQueryUrl(path string, params []query) string {
 	return url
 }
 
-func (c *Client) getWithBody(path string, body any) (data []byte, err error) {
+func (c *Client) call(method, url string, body io.Reader) (data []byte, err error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, errors.New("failed to create request: " + err.Error())
+	}
+
+	// If body is not nil, set content type to json.
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	// Wait for rate limit.
+	(*c.options.rateLimit).Take()
+	res, err := c.options.httpClient.Do(req)
+	if err != nil {
+		return nil, errors.New("failed to execute request: " + err.Error())
+	}
+	defer res.Body.Close()
+
+	data, err = io.ReadAll(res.Body)
+	if err != nil {
+		return nil, errors.New("failed to read response body: " + err.Error())
+	}
+
+	return data, nil
+}
+
+func (c *Client) get(path string, params []query) (data []byte, err error) {
+	url := c.buildQueryUrl(path, params)
+	data, err = c.call("GET", url, nil)
+	if err != nil {
+		return nil, errors.New("failed to execute request: " + err.Error())
+	}
+
+	return data, nil
+}
+
+func (c *Client) post(path string, body any) (data []byte, err error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, errors.New("failed to marshal body: " + err.Error())
@@ -159,17 +177,7 @@ func (c *Client) getWithBody(path string, body any) (data []byte, err error) {
 	}
 
 	url := c.buildBodyUrl(path)
-	data, err = c.get(url, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, errors.New("failed to execute request: " + err.Error())
-	}
-
-	return data, nil
-}
-
-func (c *Client) getWithQueries(path string, params []query) (data []byte, err error) {
-	url := c.buildQueryUrl(path, params)
-	data, err = c.get(url, nil)
+	data, err = c.call("POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, errors.New("failed to execute request: " + err.Error())
 	}
@@ -178,7 +186,7 @@ func (c *Client) getWithQueries(path string, params []query) (data []byte, err e
 }
 
 func (c *Client) Authenticate() (workspaceName string, err error) {
-	data, err := c.getWithQueries("authenticate", nil)
+	data, err := c.get("authenticate", nil)
 	if err != nil {
 		return "", errors.New("failed to authenticate: " + err.Error())
 	}
@@ -197,7 +205,7 @@ type listCampaignsResponse []struct {
 }
 
 func (c *Client) ListCampaigns() ([]Campaign, error) {
-	data, err := c.getWithQueries("campaign/list", nil)
+	data, err := c.get("campaign/list", nil)
 	if err != nil {
 		return nil, errors.New("failed to list campaigns: " + err.Error())
 	}
@@ -225,7 +233,7 @@ type getCampaignNameResponse struct {
 }
 
 func (c *Client) GetCampaignName(campaignId string) (campaignName string, err error) {
-	data, err := c.getWithQueries("campaign/get/name", []query{param("campaign_id", campaignId)})
+	data, err := c.get("campaign/get/name", []query{param("campaign_id", campaignId)})
 	if err != nil {
 		return "", errors.New("failed to get campaign name: " + err.Error())
 	}
@@ -254,7 +262,7 @@ func (c *Client) SetCampaignName(campaignId, campaignName string) error {
 		Name:       campaignName,
 	}
 
-	data, err := c.getWithBody("campaign/set/name", payload)
+	data, err := c.post("campaign/set/name", payload)
 	if err != nil {
 		return errors.New("failed to set campaign name: " + err.Error())
 	}
@@ -273,7 +281,7 @@ func (c *Client) SetCampaignName(campaignId, campaignName string) error {
 }
 
 func (c *Client) GetCampaignAccounts(campaignId string) (accountEmails []string, err error) {
-	data, err := c.getWithQueries("campaign/get/accounts", []query{param("campaign_id", campaignId)})
+	data, err := c.get("campaign/get/accounts", []query{param("campaign_id", campaignId)})
 	if err != nil {
 		return nil, errors.New("failed to get campaign accounts: " + err.Error())
 	}
@@ -302,7 +310,7 @@ func (c *Client) SetCampaignAccounts(campaignId string, accountEmails []string) 
 		AccountList: accountEmails,
 	}
 
-	data, err := c.getWithBody("campaign/set/accounts", payload)
+	data, err := c.post("campaign/set/accounts", payload)
 	if err != nil {
 		return errors.New("failed to set campaign accounts: " + err.Error())
 	}
@@ -335,7 +343,7 @@ func (c *Client) AddSendingAccount(campaignId, email string) error {
 		Email:      email,
 	}
 
-	data, err := c.getWithBody("campaign/add/account", payload)
+	data, err := c.post("campaign/add/account", payload)
 	if err != nil {
 		return errors.New("failed to add sending account: " + err.Error())
 	}
@@ -368,7 +376,7 @@ func (c *Client) RemoveSendingAccount(campaignId, email string) error {
 		Email:      email,
 	}
 
-	data, err := c.getWithBody("campaign/remove/account", payload)
+	data, err := c.post("campaign/remove/account", payload)
 	if err != nil {
 		return errors.New("failed to remove sending account: " + err.Error())
 	}
@@ -474,7 +482,7 @@ func (c *Client) SetCampaignSchedule(campaignId string, startDate time.Time, end
 		return errors.New("failed to convert campaign schedule: " + err.Error())
 	}
 
-	data, err := c.getWithBody("campaign/set/schedules", payload)
+	data, err := c.post("campaign/set/schedules", payload)
 	if err != nil {
 		return errors.New("failed to set campaign schedule: " + err.Error())
 	}
@@ -505,7 +513,7 @@ func (c *Client) LaunchCampaign(campaignId string) error {
 		CampaignId: campaignId,
 	}
 
-	data, err := c.getWithBody("campaign/launch", payload)
+	data, err := c.post("campaign/launch", payload)
 	if err != nil {
 		return errors.New("failed to launch campaign: " + err.Error())
 	}
@@ -536,7 +544,7 @@ func (c *Client) PauseCampaign(campaignId string) error {
 		CampaignId: campaignId,
 	}
 
-	data, err := c.getWithBody("campaign/pause", payload)
+	data, err := c.post("campaign/pause", payload)
 	if err != nil {
 		return errors.New("failed to pause campaign: " + err.Error())
 	}
@@ -567,7 +575,7 @@ type getCampaignSummaryResponse struct {
 }
 
 func (c *Client) GetCampaignSummary(campaignId string) (summary *getCampaignSummaryResponse, err error) {
-	data, err := c.getWithQueries("campaign/summary", []query{param("campaign_id", campaignId)})
+	data, err := c.get("campaign/summary", []query{param("campaign_id", campaignId)})
 	if err != nil {
 		return nil, errors.New("failed to get campaign summary: " + err.Error())
 	}
@@ -606,7 +614,7 @@ func (c *Client) GetCampaignCount(campaignId string, startDate time.Time, endDat
 		queries = append(queries, param("end_date", endDateStr))
 	}
 
-	data, err := c.getWithQueries("analytics/campaign/count", queries)
+	data, err := c.get("analytics/campaign/count", queries)
 
 	if err != nil {
 		return nil, errors.New("failed to get campaign count: " + err.Error())
@@ -652,7 +660,7 @@ func (c *Client) AddLeadsToCampaign(campaignId string, leads []Lead) (response *
 		Leads:      leads,
 	}
 
-	data, err := c.getWithBody("lead/add", payload)
+	data, err := c.post("lead/add", payload)
 	if err != nil {
 		return nil, errors.New("failed to add leads to campaign: " + err.Error())
 	}
@@ -690,7 +698,7 @@ type getLeadFromCampaignResponse []struct {
 }
 
 func (c *Client) GetLeadFromCampaign(campaignId, email string) (lead internalLead, err error) {
-	data, err := c.getWithQueries("lead/get", []query{param("campaign_id", campaignId), param("email", email)})
+	data, err := c.get("lead/get", []query{param("campaign_id", campaignId), param("email", email)})
 	if err != nil {
 		return lead, errors.New("failed to get lead from campaign: " + err.Error())
 	}
@@ -746,7 +754,7 @@ func (c *Client) DeleteLeadsFromCampaign(campaignId string, deleteAllFromCompany
 		DeleteList:           deleteList,
 	}
 
-	data, err := c.getWithBody("lead/delete", payload)
+	data, err := c.post("lead/delete", payload)
 	if err != nil {
 		return errors.New("failed to delete leads from campaign: " + err.Error())
 	}
@@ -794,7 +802,7 @@ func (c *Client) UpdateLeadStatus(campaignId, email, status string) error {
 		NewStatus:  status,
 	}
 
-	data, err := c.getWithBody("lead/update/status", payload)
+	data, err := c.post("lead/update/status", payload)
 	if err != nil {
 		return errors.New("failed to update lead status: " + err.Error())
 	}
@@ -829,7 +837,7 @@ func (c *Client) UpdateLeadVariable(campaignId, email string, variables map[stri
 		Variables:  variables,
 	}
 
-	data, err := c.getWithBody("lead/data/update", payload)
+	data, err := c.post("lead/data/update", payload)
 	if err != nil {
 		return errors.New("failed to update lead variable: " + err.Error())
 	}
@@ -864,7 +872,7 @@ func (c *Client) SetLeadVariable(campaignId, email string, variables map[string]
 		Variables:  variables,
 	}
 
-	data, err := c.getWithBody("lead/data/set", payload)
+	data, err := c.post("lead/data/set", payload)
 	if err != nil {
 		return errors.New("failed to set lead variable: " + err.Error())
 	}
@@ -899,7 +907,7 @@ func (c *Client) DeleteLeadVariables(campaignId, email string, variables []strin
 		Variables:  variables,
 	}
 
-	data, err := c.getWithBody("lead/data/update", payload)
+	data, err := c.post("lead/data/update", payload)
 	if err != nil {
 		return errors.New("failed to delete lead variables: " + err.Error())
 	}
@@ -933,7 +941,7 @@ func (c *Client) AddEntriesToBlocklist(entries []string) (entriesAdded int, err 
 		Entries: entries,
 	}
 
-	data, err := c.getWithBody("blocklist/add/entries", payload)
+	data, err := c.post("blocklist/add/entries", payload)
 	if err != nil {
 		return 0, errors.New("failed to add entries to blocklist: " + err.Error())
 	}
@@ -997,7 +1005,7 @@ type Account struct {
 }
 
 func (c *Client) ListAccounts(limit, skip int) ([]Account, error) {
-	data, err := c.getWithQueries("account/list", []query{
+	data, err := c.get("account/list", []query{
 		param("limit", strconv.Itoa(limit)),
 		param("skip", strconv.Itoa(skip)),
 	})
@@ -1061,7 +1069,7 @@ func (c *Client) CheckAccountVitals(accounts []string) (successList, failureList
 		Accounts: accounts,
 	}
 
-	data, err := c.getWithBody("account/test/vitals", payload)
+	data, err := c.post("account/test/vitals", payload)
 	if err != nil {
 		return nil, nil, errors.New("failed to check account vitals: " + err.Error())
 	}
@@ -1114,7 +1122,7 @@ func (c *Client) EnableWarmup(email string) error {
 		Email: email,
 	}
 
-	data, err := c.getWithBody("account/warmup/enable", payload)
+	data, err := c.post("account/warmup/enable", payload)
 	if err != nil {
 		return errors.New("failed to enable warmup: " + err.Error())
 	}
@@ -1145,7 +1153,7 @@ func (c *Client) PauseWarmup(email string) error {
 		Email: email,
 	}
 
-	data, err := c.getWithBody("account/warmup/pause", payload)
+	data, err := c.post("account/warmup/pause", payload)
 	if err != nil {
 		return errors.New("failed to pause warmup: " + err.Error())
 	}
@@ -1176,7 +1184,7 @@ func (c *Client) MarkAccountAsFixed(email string) error {
 		Email: email,
 	}
 
-	data, err := c.getWithBody("account/mark_fixed", payload)
+	data, err := c.post("account/mark_fixed", payload)
 	if err != nil {
 		return errors.New("failed to mark accounts as fixed: " + err.Error())
 	}
@@ -1197,7 +1205,7 @@ func (c *Client) MarkAccountAsFixed(email string) error {
 func (c *Client) MarkAllAccountsAsFixed() error {
 	payload := markAccountAsFixedPayload{}
 
-	data, err := c.getWithBody("account/mark_fixed", payload)
+	data, err := c.post("account/mark_fixed", payload)
 	if err != nil {
 		return errors.New("failed to mark accounts as fixed: " + err.Error())
 	}
@@ -1228,7 +1236,7 @@ func (c *Client) DeleteAccount(email string) error {
 		Email: email,
 	}
 
-	data, err := c.getWithBody("account/delete", payload)
+	data, err := c.post("account/delete", payload)
 	if err != nil {
 		return errors.New("failed to delete account: " + err.Error())
 	}
