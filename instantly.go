@@ -91,6 +91,28 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	return &Client{apiKey: apiKey, options: o}, nil
 }
 
+func (c *Client) get(url string, body io.Reader) (data []byte, err error) {
+	req, err := http.NewRequest("GET", url, body)
+	if err != nil {
+		return nil, errors.New("failed to create request: " + err.Error())
+	}
+
+	// Wait for rate limit.
+	(*c.options.rateLimit).Take()
+	res, err := c.options.httpClient.Do(req)
+	if err != nil {
+		return nil, errors.New("failed to execute request: " + err.Error())
+	}
+	defer res.Body.Close()
+
+	data, err = io.ReadAll(res.Body)
+	if err != nil {
+		return nil, errors.New("failed to read response body: " + err.Error())
+	}
+
+	return data, nil
+}
+
 type query struct {
 	key   string
 	value string
@@ -137,21 +159,9 @@ func (c *Client) getWithBody(path string, body any) (data []byte, err error) {
 	}
 
 	url := c.buildBodyUrl(path)
-
-	req, err := http.NewRequest("GET", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, errors.New("failed to create request: " + err.Error())
-	}
-
-	res, err := c.options.httpClient.Do(req)
+	data, err = c.get(url, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return nil, errors.New("failed to execute request: " + err.Error())
-	}
-	defer res.Body.Close()
-
-	data, err = io.ReadAll(res.Body)
-	if err != nil {
-		return nil, errors.New("failed to read response body: " + err.Error())
 	}
 
 	return data, nil
@@ -159,23 +169,12 @@ func (c *Client) getWithBody(path string, body any) (data []byte, err error) {
 
 func (c *Client) getWithQueries(path string, params []query) (data []byte, err error) {
 	url := c.buildQueryUrl(path, params)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, errors.New("failed to create request: " + err.Error())
-	}
-
-	res, err := c.options.httpClient.Do(req)
+	data, err = c.get(url, nil)
 	if err != nil {
 		return nil, errors.New("failed to execute request: " + err.Error())
 	}
-	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, errors.New("failed to read response body: " + err.Error())
-	}
-
-	return body, nil
+	return data, nil
 }
 
 func (c *Client) Authenticate() (workspaceName string, err error) {
@@ -930,7 +929,7 @@ func (c *Client) AddEntriesToBlocklist(entries []string) (entriesAdded int, err 
 		Entries: entries,
 	}
 
-	data, err := c.getWithBody("blocklist/add", payload)
+	data, err := c.getWithBody("blocklist/add/entries", payload)
 	if err != nil {
 		return 0, errors.New("failed to add entries to blocklist: " + err.Error())
 	}
@@ -1155,6 +1154,89 @@ func (c *Client) PauseWarmup(email string) error {
 
 	if response.Status != "success" {
 		return errors.New("failed to pause warmup")
+	}
+
+	return nil
+}
+
+type markAccountAsFixedPayload struct {
+	Email string `json:"email,omitempty"`
+}
+
+type markAccountAsFixedResponse struct {
+	Status string `json:"status"`
+}
+
+func (c *Client) MarkAccountAsFixed(email string) error {
+	payload := markAccountAsFixedPayload{
+		Email: email,
+	}
+
+	data, err := c.getWithBody("account/mark_fixed", payload)
+	if err != nil {
+		return errors.New("failed to mark accounts as fixed: " + err.Error())
+	}
+
+	var response *markAccountAsFixedResponse
+	err = json.Unmarshal(data, &response)
+	if err != nil {
+		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
+	}
+
+	if response.Status != "success" {
+		return errors.New("failed to mark accounts as fixed")
+	}
+
+	return nil
+}
+
+func (c *Client) MarkAllAccountsAsFixed() error {
+	payload := markAccountAsFixedPayload{}
+
+	data, err := c.getWithBody("account/mark_fixed", payload)
+	if err != nil {
+		return errors.New("failed to mark accounts as fixed: " + err.Error())
+	}
+
+	var response *markAccountAsFixedResponse
+	err = json.Unmarshal(data, &response)
+	if err != nil {
+		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
+	}
+
+	if response.Status != "success" {
+		return errors.New("failed to mark accounts as fixed")
+	}
+
+	return nil
+}
+
+type deleteAccountPayload struct {
+	Email string `json:"email"`
+}
+
+type deleteAccountResponse struct {
+	Status string `json:"status"`
+}
+
+func (c *Client) DeleteAccount(email string) error {
+	payload := deleteAccountPayload{
+		Email: email,
+	}
+
+	data, err := c.getWithBody("account/delete", payload)
+	if err != nil {
+		return errors.New("failed to delete account: " + err.Error())
+	}
+
+	var response *deleteAccountResponse
+	err = json.Unmarshal(data, &response)
+	if err != nil {
+		return errors.New("failed to unmarshal delete account: " + err.Error())
+	}
+
+	if response.Status != "success" {
+		return errors.New("failed to delete account")
 	}
 
 	return nil
