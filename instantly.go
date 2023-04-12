@@ -202,7 +202,7 @@ func (c *Client) ListCampaigns() ([]Campaign, error) {
 		return nil, errors.New("failed to list campaigns: " + err.Error())
 	}
 
-	var res *listCampaignsResponse
+	res := &listCampaignsResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return nil, errors.New("failed to unmarshal campaigns: " + err.Error())
@@ -230,7 +230,7 @@ func (c *Client) GetCampaignName(campaignId string) (campaignName string, err er
 		return "", errors.New("failed to get campaign name: " + err.Error())
 	}
 
-	var res *getCampaignNameResponse
+	res := &getCampaignNameResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return "", errors.New("failed to unmarshal campaign name: " + err.Error())
@@ -259,7 +259,7 @@ func (c *Client) SetCampaignName(campaignId, campaignName string) error {
 		return errors.New("failed to set campaign name: " + err.Error())
 	}
 
-	var res *setCampaignNameResponse
+	res := &setCampaignNameResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal campaign name: " + err.Error())
@@ -307,7 +307,7 @@ func (c *Client) SetCampaignAccounts(campaignId string, accountEmails []string) 
 		return errors.New("failed to set campaign accounts: " + err.Error())
 	}
 
-	var res *setCampaignAccountsResponse
+	res := &setCampaignAccountsResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal campaign accounts: " + err.Error())
@@ -340,7 +340,7 @@ func (c *Client) AddSendingAccount(campaignId, email string) error {
 		return errors.New("failed to add sending account: " + err.Error())
 	}
 
-	var res *addSendingAccountResponse
+	res := &addSendingAccountResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal sending account: " + err.Error())
@@ -373,7 +373,7 @@ func (c *Client) RemoveSendingAccount(campaignId, email string) error {
 		return errors.New("failed to remove sending account: " + err.Error())
 	}
 
-	var res *removeSendingAccountResponse
+	res := &removeSendingAccountResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal sending account: " + err.Error())
@@ -479,7 +479,7 @@ func (c *Client) SetCampaignSchedule(campaignId string, startDate time.Time, end
 		return errors.New("failed to set campaign schedule: " + err.Error())
 	}
 
-	var res *setCampaignScheduleResponse
+	res := &setCampaignScheduleResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal campaign schedule: " + err.Error())
@@ -510,7 +510,7 @@ func (c *Client) LaunchCampaign(campaignId string) error {
 		return errors.New("failed to launch campaign: " + err.Error())
 	}
 
-	var res *launchCampaignResponse
+	res := &launchCampaignResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal campaign launch: " + err.Error())
@@ -541,7 +541,7 @@ func (c *Client) PauseCampaign(campaignId string) error {
 		return errors.New("failed to pause campaign: " + err.Error())
 	}
 
-	var res *pauseCampaignResponse
+	res := &pauseCampaignResponse{}
 	err = json.Unmarshal(data, res)
 	if err != nil {
 		return errors.New("failed to unmarshal campaign pause: " + err.Error())
@@ -695,32 +695,36 @@ func (c *Client) GetLeadFromCampaign(campaignId, email string) (lead internalLea
 		return lead, errors.New("failed to get lead from campaign: " + err.Error())
 	}
 
-	var response *getLeadFromCampaignResponse
-	err = json.Unmarshal(data, &response)
+	res := getLeadFromCampaignResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return lead, errors.New("failed to unmarshal get lead from campaign: " + err.Error())
 	}
 
-	if len(*response) == 0 {
+	if len(res) == 0 {
 		return lead, errors.New("no lead found")
 	}
 
+	if len(res) > 1 {
+		return lead, errors.New("multiple leads found")
+	}
+
 	// Convert timestamp to time.Time.
-	timestamp, err := time.Parse(time.RFC3339, (*response)[0].Timestamp)
+	timestamp, err := time.Parse(time.RFC3339, res[0].Timestamp)
 	if err != nil {
 		return lead, errors.New("failed to parse timestamp: " + err.Error())
 	}
 
 	lead = internalLead{
-		Id:           (*response)[0].Id,
+		Id:           res[0].Id,
 		Timestamp:    timestamp,
-		Campaign:     (*response)[0].Campaign,
-		Status:       (*response)[0].Status,
-		Contact:      (*response)[0].Contact,
-		EmailOpened:  (*response)[0].EmailOpened,
-		EmailReplied: (*response)[0].EmailReplied,
-		LeadData:     (*response)[0].LeadData,
-		CampaignName: (*response)[0].CampaignName,
+		Campaign:     res[0].Campaign,
+		Status:       res[0].Status,
+		Contact:      res[0].Contact,
+		EmailOpened:  res[0].EmailOpened,
+		EmailReplied: res[0].EmailReplied,
+		LeadData:     res[0].LeadData,
+		CampaignName: res[0].CampaignName,
 	}
 
 	return lead, nil
@@ -747,7 +751,7 @@ func (c *Client) DeleteLeadsFromCampaign(campaignId string, deleteAllFromCompany
 		return errors.New("failed to delete leads from campaign: " + err.Error())
 	}
 
-	var response *deleteLeadsFromCampaignResponse
+	response := deleteLeadsFromCampaignResponse{}
 	err = json.Unmarshal(data, &response)
 	if err != nil {
 		return errors.New("failed to unmarshal delete leads from campaign: " + err.Error())
@@ -795,13 +799,13 @@ func (c *Client) UpdateLeadStatus(campaignId, email, status string) error {
 		return errors.New("failed to update lead status: " + err.Error())
 	}
 
-	var response *updateLeadStatusResponse
-	err = json.Unmarshal(data, &response)
+	res := updateLeadStatusResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal update lead status: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to update lead status")
 	}
 
@@ -830,13 +834,13 @@ func (c *Client) UpdateLeadVariable(campaignId, email string, variables map[stri
 		return errors.New("failed to update lead variable: " + err.Error())
 	}
 
-	var response *updateLeadVariableResponse
-	err = json.Unmarshal(data, &response)
+	res := updateLeadVariableResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal update lead variable: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to update lead variable")
 	}
 
@@ -865,13 +869,13 @@ func (c *Client) SetLeadVariable(campaignId, email string, variables map[string]
 		return errors.New("failed to set lead variable: " + err.Error())
 	}
 
-	var response *setLeadVariableResponse
-	err = json.Unmarshal(data, &response)
+	res := setLeadVariableResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal set lead variable: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to set lead variable")
 	}
 
@@ -900,13 +904,13 @@ func (c *Client) DeleteLeadVariables(campaignId, email string, variables []strin
 		return errors.New("failed to delete lead variables: " + err.Error())
 	}
 
-	var response *deleteLeadVariablesResponse
-	err = json.Unmarshal(data, &response)
+	res := deleteLeadVariablesResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal delete lead variables: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to delete lead variables")
 	}
 
@@ -934,17 +938,17 @@ func (c *Client) AddEntriesToBlocklist(entries []string) (entriesAdded int, err 
 		return 0, errors.New("failed to add entries to blocklist: " + err.Error())
 	}
 
-	var response *addEntriesToBlocklistResponse
-	err = json.Unmarshal(data, &response)
+	res := addEntriesToBlocklistResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return 0, errors.New("failed to unmarshal add entries to blocklist: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return 0, errors.New("failed to add entries to blocklist")
 	}
 
-	return response.EntriesAdded, nil
+	return res.EntriesAdded, nil
 }
 
 type listAccountsResponse struct {
@@ -1001,18 +1005,18 @@ func (c *Client) ListAccounts(limit, skip int) ([]Account, error) {
 		return nil, errors.New("failed to list accounts: " + err.Error())
 	}
 
-	var response *listAccountsResponse
-	err = json.Unmarshal(data, &response)
+	res := listAccountsResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return nil, errors.New("failed to unmarshal list accounts: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return nil, errors.New("failed to list accounts")
 	}
 
-	accounts := make([]Account, len(response.Accounts))
-	for i, account := range response.Accounts {
+	accounts := make([]Account, len(res.Accounts))
+	for i, account := range res.Accounts {
 		timestampCreated, err := time.Parse(time.RFC3339, account.TimestampCreated)
 		if err != nil {
 			return nil, errors.New("failed to parse timestamp created: " + err.Error())
@@ -1062,18 +1066,18 @@ func (c *Client) CheckAccountVitals(accounts []string) (successList, failureList
 		return nil, nil, errors.New("failed to check account vitals: " + err.Error())
 	}
 
-	var response *checkAccountVitalsResponse
-	err = json.Unmarshal(data, &response)
+	res := checkAccountVitalsResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return nil, nil, errors.New("failed to unmarshal check account vitals: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return nil, nil, errors.New("failed to check account vitals")
 	}
 
-	successList = make([]AccountVitals, len(response.SuccessList))
-	for i, account := range response.SuccessList {
+	successList = make([]AccountVitals, len(res.SuccessList))
+	for i, account := range res.SuccessList {
 		successList[i] = AccountVitals{
 			Domain: account.Domain,
 			Mx:     account.Mx,
@@ -1083,8 +1087,8 @@ func (c *Client) CheckAccountVitals(accounts []string) (successList, failureList
 		}
 	}
 
-	failureList = make([]AccountVitals, len(response.FailureList))
-	for i, account := range response.FailureList {
+	failureList = make([]AccountVitals, len(res.FailureList))
+	for i, account := range res.FailureList {
 		failureList[i] = AccountVitals{
 			Domain: account.Domain,
 			Mx:     account.Mx,
@@ -1115,13 +1119,13 @@ func (c *Client) EnableWarmup(email string) error {
 		return errors.New("failed to enable warmup: " + err.Error())
 	}
 
-	var response *enableWarmupResponse
-	err = json.Unmarshal(data, &response)
+	res := enableWarmupResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal enable warmup: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to enable warmup")
 	}
 
@@ -1146,13 +1150,13 @@ func (c *Client) PauseWarmup(email string) error {
 		return errors.New("failed to pause warmup: " + err.Error())
 	}
 
-	var response *pauseWarmupResponse
-	err = json.Unmarshal(data, &response)
+	res := pauseWarmupResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal pause warmup: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to pause warmup")
 	}
 
@@ -1177,13 +1181,13 @@ func (c *Client) MarkAccountAsFixed(email string) error {
 		return errors.New("failed to mark accounts as fixed: " + err.Error())
 	}
 
-	var response *markAccountAsFixedResponse
-	err = json.Unmarshal(data, &response)
+	res := markAccountAsFixedResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to mark accounts as fixed")
 	}
 
@@ -1198,13 +1202,13 @@ func (c *Client) MarkAllAccountsAsFixed() error {
 		return errors.New("failed to mark accounts as fixed: " + err.Error())
 	}
 
-	var response *markAccountAsFixedResponse
-	err = json.Unmarshal(data, &response)
+	res := markAccountAsFixedResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal mark accounts as fixed: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to mark accounts as fixed")
 	}
 
@@ -1229,13 +1233,13 @@ func (c *Client) DeleteAccount(email string) error {
 		return errors.New("failed to delete account: " + err.Error())
 	}
 
-	var response *deleteAccountResponse
-	err = json.Unmarshal(data, &response)
+	res := deleteAccountResponse{}
+	err = json.Unmarshal(data, &res)
 	if err != nil {
 		return errors.New("failed to unmarshal delete account: " + err.Error())
 	}
 
-	if response.Status != "success" {
+	if res.Status != "success" {
 		return errors.New("failed to delete account")
 	}
 
